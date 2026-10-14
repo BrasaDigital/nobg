@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Removedor de Fundo</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --txt:#e8eaf0; --mut:#8b93a5; --acc:#ff6b2c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:28px 20px 8px;text-align:center}
+  h1{margin:0;font-size:1.7rem}
+  header p{margin:6px 0 0;color:var(--mut)}
+  main{max-width:960px;margin:0 auto;padding:16px 16px 60px}
+  #drop{
+    border:2px dashed var(--line);border-radius:16px;padding:44px 20px;text-align:center;
+    background:var(--card);cursor:pointer;transition:.15s
+  }
+  #drop.over{border-color:var(--acc);background:#20242d}
+  #drop strong{color:var(--acc)}
+  #drop small{display:block;color:var(--mut);margin-top:6px}
+  #list{display:grid;gap:18px;margin-top:22px}
+  .item{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px}
+  .item h3{margin:0 0 10px;font-size:.95rem;font-weight:600;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .stage{
+    position:relative;border-radius:10px;overflow:hidden;
+    background-color:#fff;
+    background-image:linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%),
+                     linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%);
+    background-size:20px 20px;background-position:0 0,10px 10px;
+    display:flex;justify-content:center;
+  }
+  .stage.solid{background-image:none}
+  .stage img,.stage canvas{display:block;max-width:100%;max-height:520px;height:auto}
+  .orig{position:absolute;inset:0;margin:auto;width:100%;height:100%;object-fit:contain;clip-path:inset(0 50% 0 0)}
+  .slider{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:ew-resize;margin:0}
+  .bar{position:absolute;top:0;bottom:0;left:50%;width:2px;background:#fff;box-shadow:0 0 6px #0008;pointer-events:none}
+  .status{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000a;color:#fff;gap:10px;font-size:.95rem}
+  .prog{width:60%;height:6px;background:#fff3;border-radius:4px;overflow:hidden}
+  .prog i{display:block;height:100%;width:0;background:var(--acc);transition:width .2s}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+  button,.btn{
+    background:var(--acc);color:#fff;border:0;border-radius:10px;padding:9px 16px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none
+  }
+  button.sec{background:#2a2f3a}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .sw{width:28px;height:28px;border-radius:50%;border:2px solid var(--line);cursor:pointer;padding:0}
+  .sw.on{border-color:var(--acc)}
+  .sw.t{background:conic-gradient(#ccc 25%,#fff 0 50%,#ccc 0 75%,#fff 0);background-size:12px 12px}
+  input[type=color]{width:34px;height:30px;border:0;background:none;padding:0;cursor:pointer}
+  .err{color:#ff7b7b}
+  footer{text-align:center;color:var(--mut);font-size:.85rem;padding:20px}
+  footer a{color:var(--acc)}
+</style>
+</head>
+<body>
+<header>
+  <h1>✂️ Removedor de Fundo</h1>
+  <p>Grátis e ilimitado. Suas imagens não saem do seu computador.</p>
+</header>
+
+<main>
+  <div id="drop">
+    <div><strong>Clique</strong>, arraste imagens aqui ou cole com <strong>Ctrl+V</strong></div>
+    <small>JPG, PNG ou WebP · várias imagens de uma vez</small>
+    <input id="file" type="file" accept="image/*" multiple hidden>
+  </div>
+  <div id="list"></div>
+</main>
+<footer>Na primeira imagem o modelo de IA é baixado (~40 MB) e fica em cache.<br><a href="https://github.com/BrasaDigital/nobg">Código-fonte</a> · licença AGPL-3.0</footer>
+
+<script type="module">
+import { removeBackground } from "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+esm";
+
+const $ = s => document.querySelector(s);
+const drop = $("#drop"), fileIn = $("#file"), list = $("#list");
+
+drop.onclick = () => fileIn.click();
+fileIn.onchange = () => { handle([...fileIn.files]); fileIn.value = ""; };
+["dragenter","dragover"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
+["dragleave","drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", ev => handle([...ev.dataTransfer.files]));
+window.addEventListener("paste", ev => handle([...ev.clipboardData.files]));
+
+// fila: processa uma imagem por vez para não travar o navegador
+let chain = Promise.resolve();
+function handle(files){
+  files.filter(f => f.type.startsWith("image/")).forEach(f => {
+    const ui = createItem(f);
+    chain = chain.then(() => process(f, ui));
+  });
+}
+
+function createItem(file){
+  const el = document.createElement("div");
+  el.className = "item";
+  el.innerHTML = `
+    <h3></h3>
+    <div class="stage"><img class="res" alt=""><div class="status"><span>Na fila…</span><div class="prog"><i></i></div></div></div>
+    <div class="row" hidden>
+      <button class="dl">⬇ Baixar PNG</button>
+      <span style="color:var(--mut)">Fundo:</span>
+      <button class="sw t on" data-c="" title="Transparente"></button>
+      <button class="sw" data-c="#ffffff" style="background:#fff" title="Branco"></button>
+      <button class="sw" data-c="#000000" style="background:#000" title="Preto"></button>
+      <input type="color" value="#ff6b2c" title="Cor personalizada">
+      <button class="sec rm">Remover</button>
+    </div>
+    <div class="row clean" hidden style="color:var(--mut);font-size:.9rem">
+      <label><input type="checkbox" class="isl" checked> Remover pedaços soltos</label>
+      <label><input type="checkbox" class="hol" checked> Tapar buracos</label>
+      <label class="bgctl"><input type="checkbox" class="key" checked> Tirar cor do fundo na borda</label>
+      <label class="bgctl">Tolerância <input type="range" class="tol" min="20" max="200" value="100" style="vertical-align:middle"></label>
+      <label>Suavizar <input type="range" class="smo" min="0" max="8" value="3" style="vertical-align:middle"></label>
+      <label>Limpar bordas <input type="range" class="ero" min="0" max="4" value="1" style="vertical-align:middle"></label>
+    </div>`;
+  el.querySelector("h3").textContent = file.name;
+  list.prepend(el);
+  return el;
+}
+
+async function process(file, el){
+  const stage = el.querySelector(".stage"), st = el.querySelector(".status");
+  const label = st.querySelector("span"), bar = st.querySelector("i");
+  const res = el.querySelector(".res");
+  const srcUrl = URL.createObjectURL(file);
+  res.src = srcUrl; // pré-visualização enquanto processa
+  label.textContent = "Processando…";
+  try{
+    const opts = {
+      output: { format: "image/png" },
+      progress: (key, cur, total) => {
+        if (total) bar.style.width = Math.round(cur/total*100) + "%";
+        label.textContent = key.startsWith("fetch") ? "Baixando modelo de IA (modelo preciso)…" : "Removendo fundo…";
+      }
+    };
+    let blob;
+    try { blob = await removeBackground(file, { ...opts, model: "isnet" }); }   // modelo mais preciso
+    catch(e1){ console.warn("isnet falhou, usando padrão", e1); blob = await removeBackground(file, opts); }
+    st.remove();
+    await finish(el, stage, res, srcUrl, blob, file.name);
+  }catch(e){
+    console.error(e);
+    st.innerHTML = `<span class="err">Erro: ${e.message || e}</span>`;
+  }
+}
+
+// Pós-processamento da máscara: pedaços soltos, buracos, bordas serrilhadas e franja escura
+async function makeCleaner(blob, origBlob){
+  const bmp = await createImageBitmap(blob), w = bmp.width, h = bmp.height, n = w*h;
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0);
+  const base = ctx.getImageData(0, 0, w, h);
+  // imagem original: dá as cores reais (o canvas perde cor nos pixels semitransparentes)
+  let O = null;
+  try {
+    const ob = await createImageBitmap(origBlob);
+    if (ob.width === w && ob.height === h){
+      const c2 = document.createElement("canvas"); c2.width = w; c2.height = h;
+      const x2 = c2.getContext("2d", { willReadFrequently: true });
+      x2.drawImage(ob, 0, 0); O = x2.getImageData(0, 0, w, h);
+    }
+  } catch(e){ console.warn("sem original", e); }
+  const RGB = O ? O.data : base.data;
+  // cor(es) do fundo: 1 ou 2 tons na moldura da imagem original (2 tons = xadrez falso de transparência)
+  let bgc = null;
+  if (O){
+    const pts = [];
+    const t = Math.max(2, Math.round(Math.min(w, h) * 0.004));
+    for (let y = 0; y < h; y += 3) for (let x = 0; x < w; x += 3){
+      if (x < t || y < t || x >= w-t || y >= h-t) pts.push(y*w + x);
+    }
+    const lum = p => RGB[p*4] + RGB[p*4+1] + RGB[p*4+2];
+    const sorted = pts.slice().sort((p, q) => lum(p) - lum(q));
+    let cs = [sorted[sorted.length >> 3], sorted[(sorted.length * 7) >> 3]].map(p => [RGB[p*4], RGB[p*4+1], RGB[p*4+2]]);
+    for (let it = 0; it < 8; it++){                    // k-means com k = 2
+      const acc = [[0,0,0,0],[0,0,0,0]];
+      for (const p of pts){
+        const r = RGB[p*4], g = RGB[p*4+1], b = RGB[p*4+2];
+        const k = Math.hypot(r-cs[0][0], g-cs[0][1], b-cs[0][2]) <= Math.hypot(r-cs[1][0], g-cs[1][1], b-cs[1][2]) ? 0 : 1;
+        acc[k][0] += r; acc[k][1] += g; acc[k][2] += b; acc[k][3]++;
+      }
+      cs = cs.map((c, k) => acc[k][3] ? [acc[k][0]/acc[k][3], acc[k][1]/acc[k][3], acc[k][2]/acc[k][3]] : c);
+    }
+    if (Math.hypot(cs[0][0]-cs[1][0], cs[0][1]-cs[1][1], cs[0][2]-cs[1][2]) < 30) cs = [cs[0]];   // só 1 tom
+    let ok = 0;
+    for (const p of pts){
+      let m = 1e9;
+      for (const c of cs) m = Math.min(m, Math.hypot(RGB[p*4]-c[0], RGB[p*4+1]-c[1], RGB[p*4+2]-c[2]));
+      if (m < 45) ok++;
+    }
+    if (ok / pts.length > 0.6) bgc = cs;
+  }
+  const bgDist = (r, g, b) => { let m = 1e9; for (const c of bgc) m = Math.min(m, Math.hypot(r-c[0], g-c[1], b-c[2])); return m; };
+  const satBg = !!bgc && bgc.every(c => (Math.max(...c) - Math.min(...c)) / Math.max(...c, 1) > 0.5);
+  const scale = Math.max(1, Math.max(w, h) / 1000);
+  const stack = new Int32Array(n);
+
+  // rotula componentes conectados de pixels com mask[i] === val
+  function labelize(mask, val, eight){
+    const lab = new Int32Array(n), sizes = [0], border = [false]; let id = 0;
+    for (let s = 0; s < n; s++){
+      if (lab[s] || mask[s] !== val) continue;
+      id++; let sp = 0, cnt = 0, b = false; stack[sp++] = s; lab[s] = id;
+      while (sp){
+        const p = stack[--sp]; cnt++;
+        const x = p % w, y = (p - x) / w;
+        if (x === 0 || y === 0 || x === w-1 || y === h-1) b = true;
+        for (let dy = -1; dy <= 1; dy++){
+          const yy = y + dy; if (yy < 0 || yy >= h) continue;
+          for (let dx = -1; dx <= 1; dx++){
+            if (!dx && !dy) continue;
+            if (!eight && dx && dy) continue;
+            const xx = x + dx; if (xx < 0 || xx >= w) continue;
+            const q = yy*w + xx;
+            if (!lab[q] && mask[q] === val){ lab[q] = id; stack[sp++] = q; }
+          }
+        }
+      }
+      sizes.push(cnt); border.push(b);
+    }
+    return { lab, sizes, border };
+  }
+
+  function boxBlur(src, r){
+    const tmp = new Float32Array(n), out = new Float32Array(n), d = 2*r + 1;
+    for (let y = 0; y < h; y++){
+      const o = y*w; let sum = 0;
+      for (let x = -r; x <= r; x++) sum += src[o + Math.min(Math.max(x, 0), w-1)];
+      for (let x = 0; x < w; x++){
+        tmp[o + x] = sum / d;
+        sum += src[o + Math.min(x + r + 1, w-1)] - src[o + Math.max(x - r, 0)];
+      }
+    }
+    for (let x = 0; x < w; x++){
+      let sum = 0;
+      for (let y = -r; y <= r; y++) sum += tmp[Math.min(Math.max(y, 0), h-1)*w + x];
+      for (let y = 0; y < h; y++){
+        out[y*w + x] = sum / d;
+        sum += tmp[Math.min(y + r + 1, h-1)*w + x] - tmp[Math.max(y - r, 0)*w + x];
+      }
+    }
+    return out;
+  }
+
+  const fg = new Uint8Array(n), bg = new Uint8Array(n);
+  for (let i = 0; i < n; i++){ const al = base.data[i*4+3]; fg[i] = al >= 20 ? 1 : 0; bg[i] = al < 20 ? 1 : 0; }
+  const F = labelize(fg, 1, true);
+  const H = labelize(bg, 1, false);
+  const maxSize = Math.max(...F.sizes.slice(1), 1);
+  const nh = H.sizes.length, hr = new Float64Array(nh), hg = new Float64Array(nh), hb = new Float64Array(nh), hc = new Float64Array(nh);
+  const mr = new Float64Array(nh), mg = new Float64Array(nh), mb = new Float64Array(nh);
+  for (let i = 0; i < n; i++){                         // cor média original de cada buraco
+    const l = H.lab[i]; if (!l || H.border[l]) continue;
+    mr[l] += RGB[i*4]; mg[l] += RGB[i*4+1]; mb[l] += RGB[i*4+2];
+  }
+  for (let i = 0; i < n; i++){
+    const l = H.lab[i];
+    if (!l || H.border[l] || H.sizes[l] >= maxSize * 0.003) continue;
+    const x = i % w, y = (i - x) / w;
+    for (const q of [x > 0 ? i-1 : -1, x < w-1 ? i+1 : -1, y > 0 ? i-w : -1, y < h-1 ? i+w : -1]){
+      if (q < 0 || !fg[q]) continue;
+      if (bgc && bgDist(RGB[q*4], RGB[q*4+1], RGB[q*4+2]) < 140) continue;   // ignora vizinhos rosados
+      hr[l] += RGB[q*4]; hg[l] += RGB[q*4+1]; hb[l] += RGB[q*4+2]; hc[l]++;
+    }
+  }
+
+  const bgLike = new Uint8Array(nh);
+  if (bgc) for (let l = 1; l < nh; l++){
+    const k = H.sizes[l];
+    bgLike[l] = bgDist(mr[l]/k, mg[l]/k, mb[l]/k) < 70 ? 1 : 0;
+  }
+  const result = async ({ islands, holes, smooth, erode, key, tol }) => {
+    const out = new ImageData(new Uint8ClampedArray(RGB), w, h), d = out.data;
+    let a = new Float32Array(n);
+    for (let i = 0; i < n; i++){
+      const keep = F.lab[i] && (!islands || F.sizes[F.lab[i]] >= maxSize * 0.01);
+      a[i] = keep ? d[i*4+3] : 0;
+    }
+    if (holes) for (let i = 0; i < n; i++){            // buracos internos pequenos viram sólidos
+      const l = H.lab[i];
+      if (!l || H.border[l]) continue;
+      const k = H.sizes[l];
+      if (k < maxSize * 0.003){                         // furinho: tapa com a cor da vizinhança
+        a[i] = 255;
+        if (hc[l]){ d[i*4] = hr[l]/hc[l]; d[i*4+1] = hg[l]/hc[l]; d[i*4+2] = hb[l]/hc[l]; }
+      } else if (bgc && k < maxSize * 0.05 && !bgLike[l]){   // buraco grande que NÃO é cor de fundo (ex.: camiseta branca)
+        a[i] = 255;
+      }
+    }
+    for (let k = 0, m = erode * Math.round(scale); k < m; k++){   // encolhe a máscara
+      const t = a.slice();
+      for (let y = 1; y < h-1; y++) for (let x = 1; x < w-1; x++){
+        const p = y*w + x;
+        a[p] = Math.min(t[p], t[p-1], t[p+1], t[p-w], t[p+w]);
+      }
+    }
+    if (smooth > 0){                                    // borra e reendurece: arredonda quadradinhos e fiapos
+      const r = Math.max(1, Math.round(smooth * scale));
+      a = boxBlur(boxBlur(a, r), r);
+    }
+    const sharpen = smooth > 0 || erode > 0;
+    const c = 128 + erode * 10;
+    for (let i = 0; i < n; i++){
+      let v = a[i];
+      if (sharpen) v = Math.max(0, Math.min(255, (v - (c - 22)) * 255 / 44));
+      d[i*4+3] = v;
+    }
+    if (key && bgc){                                    // remove contorno com a cor do fundo, só perto da borda
+      const edge = new Float32Array(n);
+      for (let i = 0; i < n; i++) edge[i] = d[i*4+3] < 128 ? 1 : 0;
+      const nb = boxBlur(edge, Math.max(2, Math.round(10 * scale)));
+      const t0 = tol * 0.5, t1 = tol * 1.5;
+      for (let i = 0; i < n; i++){
+        if (!d[i*4+3]) continue;
+        const near = nb[i] >= 0.002;
+        if (!near && !satBg) continue;                  // longe da borda só mexe se o fundo for cor "de chroma key"
+        const dist = bgDist(d[i*4], d[i*4+1], d[i*4+2]);
+        if (dist < t0) d[i*4+3] = 0;
+        else if (near && dist < t1) d[i*4+3] *= (dist - t0) / (t1 - t0);
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+    return new Promise(r => cv.toBlob(r, "image/png"));
+  };
+  result.hasBg = !!bgc;
+  return result;
+}
+
+async function finish(el, stage, res, srcUrl, blob, name){
+  const clean = await makeCleaner(blob, await (await fetch(srcUrl)).blob());
+  const rawBlob = blob;
+  const cl = el.querySelector(".clean"); cl.hidden = false;
+  let busy = false, again = false;
+  const update = async () => {
+    if (busy){ again = true; return; }
+    busy = true;
+    do {
+      again = false;
+      blob = await clean({
+        islands: cl.querySelector(".isl").checked,
+        holes: cl.querySelector(".hol").checked,
+        smooth: +cl.querySelector(".smo").value,
+        erode: +cl.querySelector(".ero").value,
+        key: cl.querySelector(".key").checked,
+        tol: +cl.querySelector(".tol").value
+      });
+      res.src = URL.createObjectURL(blob);
+    } while (again);
+    busy = false;
+  };
+  cl.querySelector(".isl").onchange = update;
+  cl.querySelector(".hol").onchange = update;
+  cl.querySelector(".smo").oninput = update;
+  cl.querySelector(".ero").oninput = update;
+  cl.querySelector(".key").onchange = update;
+  cl.querySelector(".tol").oninput = update;
+  if (!clean.hasBg) cl.querySelectorAll(".bgctl").forEach(x => x.hidden = true);
+  await update();
+
+  // comparação antes/depois
+  const orig = new Image(); orig.src = srcUrl; orig.className = "orig";
+  const bar = document.createElement("div"); bar.className = "bar";
+  const sl = document.createElement("input");
+  sl.type = "range"; sl.min = 0; sl.max = 100; sl.value = 100; sl.className = "slider";
+  // começa mostrando só o resultado; arrastar revela o original
+  orig.style.clipPath = "inset(0 100% 0 0)"; bar.style.left = "100%";
+  sl.oninput = () => { orig.style.clipPath = `inset(0 ${100 - sl.value}% 0 0)`; bar.style.left = sl.value + "%"; };
+  stage.append(orig, bar, sl);
+
+  const row = el.querySelector(".row"); row.hidden = false;
+  let bg = "";
+  const setBg = c => {
+    bg = c;
+    stage.classList.toggle("solid", !!c);
+    stage.style.backgroundColor = c || "#fff";
+  };
+  row.querySelectorAll(".sw").forEach(b => b.onclick = () => {
+    row.querySelectorAll(".sw").forEach(x => x.classList.remove("on"));
+    b.classList.add("on"); setBg(b.dataset.c);
+  });
+  row.querySelector("input[type=color]").oninput = e => {
+    row.querySelectorAll(".sw").forEach(x => x.classList.remove("on")); setBg(e.target.value);
+  };
+  row.querySelector(".rm").onclick = () => el.remove();
+  row.querySelector(".dl").onclick = async () => {
+    let out = blob;
+    if (bg){
+      const bmp = await createImageBitmap(blob);
+      const cv = document.createElement("canvas"); cv.width = bmp.width; cv.height = bmp.height;
+      const ctx = cv.getContext("2d"); ctx.fillStyle = bg; ctx.fillRect(0,0,cv.width,cv.height); ctx.drawImage(bmp,0,0);
+      out = await new Promise(r => cv.toBlob(r, "image/png"));
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(out);
+    a.download = name.replace(/\.[^.]+$/, "") + "-sem-fundo.png";
+    a.click();
+  };
+}
+</script>
+</body>
+</html>
