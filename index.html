@@ -70,7 +70,7 @@
   </div>
   <div id="list"></div>
 </main>
-<footer>Na primeira imagem o modelo de IA é baixado (~40 MB) e fica em cache.<br><a href="https://github.com/BrasaDigital/nobg">Código-fonte</a> · licença AGPL-3.0</footer>
+<footer><a href="https://github.com/BrasaDigital/nobg">Código-fonte</a> · licença AGPL-3.0</footer>
 
 <script type="module">
 import { removeBackground } from "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+esm";
@@ -134,7 +134,7 @@ async function process(file, el){
       output: { format: "image/png" },
       progress: (key, cur, total) => {
         if (total) bar.style.width = Math.round(cur/total*100) + "%";
-        label.textContent = key.startsWith("fetch") ? "Baixando modelo de IA (modelo preciso)…" : "Removendo fundo…";
+        label.textContent = "Removendo fundo…";
       }
     };
     let blob;
